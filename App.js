@@ -1,25 +1,28 @@
-import { StatusBar } from "expo-status-bar";
 import {
   StyleSheet,
   TextInput,
-  SafeAreaView,
-  Button,
   Text,
   ScrollView,
   View,
+  KeyboardAvoidingView,
+  TouchableWithoutFeedback,
+  Keyboard,
+  Platform,
+  TouchableOpacity,
 } from "react-native";
 import React, { useState } from "react";
+import Ionicons from "@expo/vector-icons/Ionicons";
+
+import "react-native-polyfill-globals/auto";
 
 export default function App() {
   const [threadID, setThreadID] = useState("");
   const [chat, setChat] = useState("");
-  const [reply, setReply] = useState([]);
 
   const [streamedChunks, setStreamedChunks] = useState([]);
   const [completeResponse, setCompleteResponse] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  const THREAD_URL = process.env.EXPO_PUBLIC_OPENAI_BASE_URL;
   const MESSAGE_URL = `${process.env.EXPO_PUBLIC_OPENAI_BASE_URL}/${threadID}/messages`;
   const RUN_URL = `${process.env.EXPO_PUBLIC_OPENAI_BASE_URL}/${threadID}/runs`;
   const THREAD_RUN_URL = `${process.env.EXPO_PUBLIC_OPENAI_BASE_URL}/runs`;
@@ -30,35 +33,26 @@ export default function App() {
     "OpenAI-Beta": "assistants=v2",
   };
 
-  const aiCreateThread = async () => {
-    try {
-      const response = await fetch(THREAD_URL, {
-        method: "POST",
-        headers: ASSISTANT_HEADER,
-      });
-      const results = await response.json();
-      setThreadID(results.id);
-      setReply([]);
-    } catch (err) {
-      console.log(err);
-    }
-  };
+  const aiGetLastMessage = async () => {
+    setStreamedChunks([]);
+    setCompleteResponse("");
 
-  const aiGetMessage = async () => {
     try {
       const response = await fetch(MESSAGE_URL, {
         method: "GET",
         headers: ASSISTANT_HEADER,
       });
       const results = await response.json();
-      setReply([results.data[0].content[0].text.value, ...reply]);
+      setCompleteResponse(results.data[0].content[0].text.value);
     } catch (err) {
-      console.log(err);
+      console.error(err);
     }
   };
 
   const aiCreateRun = async () => {
     setStreamedChunks([]);
+    setCompleteResponse("");
+    setIsLoading(true);
 
     try {
       const response = await fetch(RUN_URL, {
@@ -74,17 +68,18 @@ export default function App() {
             },
           ],
         }),
+        reactNative: { textStreaming: true },
       });
 
       setChat("");
       processStream(response);
     } catch (err) {
-      console.log(err);
+      console.error(err);
     }
   };
 
   const aiCreateThreadRun = async () => {
-    setStreamedChunks([]);
+    setIsLoading(true);
 
     try {
       const response = await fetch(THREAD_RUN_URL, {
@@ -102,12 +97,13 @@ export default function App() {
           },
           stream: true,
         }),
+        reactNative: { textStreaming: true },
       });
 
       setChat("");
       processStream(response);
     } catch (err) {
-      console.log(err);
+      console.error(err);
     }
   };
 
@@ -118,6 +114,18 @@ export default function App() {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+
+    const readLoop = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        handleStreamedResponse(value);
+      }
+    };
+
+    readLoop();
 
     const handleStreamedResponse = (value) => {
       const lines = decoder.decode(value).split("\n");
@@ -131,28 +139,19 @@ export default function App() {
               const event = JSON.parse(data);
               handleStreamedEvent(event);
             } catch (error) {
-              console.error("Error parsing streamed response:", error);
+              // console.error("Error parsing streamed response:", error);
             }
           }
         }
       }
     };
-
-    const readLoop = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        handleStreamedResponse(value);
-      }
-    };
-
-    readLoop();
   };
 
   const handleStreamedEvent = (event) => {
     switch (event.object) {
+      case "thread":
+        setThreadID(event.id);
+        console.log(event.id);
       case "thread.message.delta":
         if (event.delta.content) {
           const content = event.delta.content[0].text.value;
@@ -166,58 +165,62 @@ export default function App() {
           setIsLoading(false);
         }
         break;
-      case "thread.message.completed":
-        const finalMessage = event.content[0].text.value;
-        const formattedFinalMessage = finalMessage
-          .replace(/\n/g, "<br/>")
-          .replace(/\_\_(.+?)\_\_/g, "<strong>$1</strong>")
-          .replace(/\_(.+?)\_/g, "<em>$1</em>")
-          .replace(/\`(.+?)\`/g, "<code>$1</code>");
-
-        console.log("FORMATTED FINAL MESSAGE", formattedFinalMessage);
-        setCompleteResponse(formattedFinalMessage);
-        break;
       default:
         break;
     }
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <TextInput
-        style={{ width: "100%", padding: 10 }}
-        onChangeText={setChat}
-        value={chat}
-        placeholder="Type your question here..."
-      />
-      <View style={{ flexDirection: "row", gap: 10 }}>
-        <Button onPress={aiCreateRun} title="Ask" />
-        <Button onPress={aiCreateThreadRun} title="Ask On New Thread" />
-      </View>
-      <Button onPress={aiCreateThread} title="New Thread" />
-      <Button onPress={aiGetMessage} title="Get Latest Message" />
-
-      <ScrollView>
-        <Text>Chunks: {streamedChunks}</Text>
-        {reply.map((msg, index) => (
-          <Text key={index} style={{ width: "100%", padding: 10 }}>
-            {msg}
-          </Text>
-        ))}
-      </ScrollView>
-
-      <StatusBar style="auto" />
-    </SafeAreaView>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={styles.container}>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <View style={styles.inner}>
+          <ScrollView style={{ marginTop: 25 }}>
+            <Text style={{ flex: 1 }}>
+              {completeResponse}
+              {isLoading ? "Loading..." : streamedChunks}
+            </Text>
+          </ScrollView>
+          <View style={{ flexDirection: "row", gap: 2 }}>
+            <TextInput
+              style={styles.input}
+              onChangeText={setChat}
+              value={chat}
+              placeholder="Type your question here..."
+            />
+            <TouchableOpacity
+              style={styles.button}
+              onPress={threadID ? aiCreateRun : aiCreateThreadRun}>
+              <Ionicons name="send" size={32} color="blue" />
+            </TouchableOpacity>
+            {/* {threadID && (
+          <Button onPress={aiGetLastMessage} title="Get Last Message" />
+        )} */}
+          </View>
+        </View>
+      </TouchableWithoutFeedback>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
+  },
+  inner: {
+    padding: 24,
+    flex: 1,
+    justifyContent: "space-around",
+  },
+  button: {
     alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    margin: 10,
+    padding: 10,
+  },
+  input: {
+    padding: 5,
+    borderWidth: 1,
+    borderRadius: 10,
+    flex: 1,
   },
 });
